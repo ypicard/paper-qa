@@ -1342,6 +1342,7 @@ async def test_sparse_embedding(
     assert isinstance(
         docs.texts[0].embedding, list
     ), "We require embeddings to be a list"
+    assert docs.texts[0].embedding is not None
     assert any(docs.texts[0].embedding), "We require embeddings to be populated"
     assert all(
         len(np.array(x.embedding).shape) == 1 for x in docs.texts
@@ -1370,6 +1371,7 @@ async def test_hybrid_embedding(
     assert isinstance(
         docs.texts[0].embedding, list
     ), "We require embeddings to be a list"
+    assert docs.texts[0].embedding is not None
     assert any(docs.texts[0].embedding), "We require embeddings to be populated"
 
     # check the embeddings are the same size
@@ -1386,6 +1388,7 @@ async def test_hybrid_embedding(
         citation="WikiMedia Foundation, 2023, Accessed now",
         embedding_model=emb_settings.get_embedding_model(),
     )
+    assert docs.texts[0].embedding is not None
     assert any(docs.texts[0].embedding)
 
 
@@ -1636,17 +1639,20 @@ async def test_partly_embedded_texts(defer_embeddings: bool) -> None:
     # 1. Add texts, noting some are partly embedded
     docs, _ = await docs.aadd_texts(texts=texts_to_add, doc=stub_doc, settings=settings)
     assert [t.text for t in docs.texts] == [t.text for t in texts_to_add]
+    assert isinstance(docs.texts_index, NumpyVectorStore)
     assert not docs.texts_index.texts
     assert not docs.texts_index.texts_hashes
 
     # 2. Gather evidence should work
     docs, _ = await docs.aget_evidence("What do I like?")
+    assert isinstance(docs.texts_index, NumpyVectorStore)
     assert docs.texts_index.texts == docs.texts
     assert texts_to_add[1].embedding is None
     assert len(docs.texts_index.texts_hashes) == len(texts_to_add)
 
     # 3. Gathering evidence again should not change shapes
     docs, _ = await docs.aget_evidence("What was it that I liked?")
+    assert isinstance(docs.texts_index, NumpyVectorStore)
     assert docs.texts_index.texts == docs.texts
     assert texts_to_add[1].embedding is None
     assert len(docs.texts_index.texts_hashes) == len(texts_to_add)
@@ -3159,6 +3165,7 @@ async def test_partitioning_fn_docs(use_partition: bool) -> None:
     docs, session = await docs.aget_evidence(
         "What do I like or dislike?", settings=settings, partitioning_fn=partitioning_fn
     )
+    assert isinstance(docs.texts_index, NumpyVectorStore)
     assert docs.texts_index.texts == docs.texts == texts
 
     assert session.contexts, "Test requires contexts to be made"

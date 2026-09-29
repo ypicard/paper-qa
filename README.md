@@ -701,7 +701,9 @@ from paperqa import Docs, Settings
 
 docs = Docs()
 for doc in ("myfile.pdf", "myotherfile.pdf"):
-    docs, _ = await docs.aadd(doc, settings=Settings(embedding="text-embedding-large-3"))
+    docs, _ = await docs.aadd(
+        doc, settings=Settings(embedding="text-embedding-large-3")
+    )
 ```
 
 Note that PaperQA2 uses Numpy as a dense vector store.

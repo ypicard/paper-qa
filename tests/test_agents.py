@@ -197,7 +197,7 @@ async def test_resuming_crashed_index_build(agent_test_settings: Settings) -> No
     call_count = 0
     original_docs_aadd = Docs.aadd
 
-    async def crashing_aadd(*args, **kwargs) -> str | None:
+    async def crashing_aadd(*args, **kwargs) -> tuple[Docs, str | None]:
         nonlocal call_count
         if call_count == crash_threshold:
             raise RuntimeError("Unexpected crash.")

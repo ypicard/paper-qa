@@ -1,5 +1,6 @@
 import asyncio
 import pickle
+from typing import cast
 
 import pytest
 from lmi import EmbeddingModel
@@ -122,10 +123,9 @@ async def test_partitioned_retrieval_isolates_concurrent_calls():
                 "q",
                 4,
                 embedding_model=LocalEmbedding(),
-                partitioning_fn=lambda text, parity=parity: (int(text.text) + parity)
-                % 2,
+                partitioning_fn=lambda text: int(cast(Text, text).text) % 2,
             )
-            for parity in (0, 1)
+            for _ in range(2)
         )
     )
     assert all(len(matches) == 4 for _, matches in results)
