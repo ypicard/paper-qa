@@ -97,32 +97,23 @@ def test_format_to_doc_details():
 
 @pytest.mark.asyncio
 async def test_add_clinical_trials_to_docs(mock_client) -> None:
-    mock_docs = Mock(spec=Docs, aadd_texts=AsyncMock(), texts=[])
-    mock_client.get.return_value = AsyncMock(
+    docs = Docs()
+    mock_client.get.return_value = Mock(
         raise_for_status=Mock(return_value=None),
-        json=Mock(
-            return_value={
-                "studies": [
-                    {
-                        "protocolSection": {
-                            "identificationModule": {"nctId": "NCT12345678"}
-                        }
-                    }
-                ]
-            }
-        ),
+        json=Mock(side_effect=[{"studies": [SAMPLE_TRIAL_DATA]}, SAMPLE_TRIAL_DATA]),
     )
 
-    await add_clinical_trials_to_docs(
-        "test query", mock_docs, Settings(), client=mock_client
+    updated, _, added, error = await add_clinical_trials_to_docs(
+        "test query",
+        docs,
+        Settings(parsing={"defer_embedding": True}),
+        client=mock_client,
     )
 
-    assert (
-        mock_docs.aadd_texts.call_count == 2
-    ), "One for the metadata and one for the trial"
-    call_args = mock_docs.aadd_texts.call_args[1]
-    assert "doc" in call_args
-    assert isinstance(call_args["doc"].citation, str)
+    assert error is None
+    assert added == len(updated.docs) == 2
+    assert not docs.docs
+    assert all(isinstance(doc.citation, str) for doc in updated.docs.values())
 
 
 def test_parse_clinical_trial():

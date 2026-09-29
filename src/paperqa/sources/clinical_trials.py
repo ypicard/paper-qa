@@ -241,7 +241,7 @@ async def add_clinical_trials_to_docs(
     limit: int = 10,
     offset: int = 0,
     client: httpx.AsyncClient | None = None,
-) -> tuple[int, int, str | None]:
+) -> tuple[Docs, int, int, str | None]:
     """Add clinical trials to the docs state.
 
     Args:
@@ -253,8 +253,7 @@ async def add_clinical_trials_to_docs(
         client: Async HTTP client for any requests.
 
     Returns:
-        tuple[int, int, str | None]:
-            Total number of trials found, number of trials added, and error message if any.
+        Updated corpus, total trials found, number added, and any error message.
     """
     ssl_context = ssl.create_default_context()
     # clinicaltrials.gov throws 403's in GitHub Actions if TLS 1.3 is used with httpx
@@ -277,7 +276,7 @@ async def add_clinical_trials_to_docs(
         # close client if it was ephemeral
         if client is None:
             await _client.aclose()  # TODO: move to context manager
-        return (0, 0, str(e))
+        return (docs, 0, 0, str(e))
 
     logger.info(f"Successfully found {len(trials)} trials.")
 
@@ -292,7 +291,7 @@ async def add_clinical_trials_to_docs(
         doc_details = format_to_doc_details(trial)
         # always uses full object, no chunking for clinical trials
         # for embedding model context windows, we truncate at TRIAL_CHAR_TRUNCATION_SIZE
-        await docs.aadd_texts(
+        docs, _ = await docs.aadd_texts(
             texts=[
                 Text(
                     text=trial_text[:TRIAL_CHAR_TRUNCATION_SIZE],
@@ -318,7 +317,7 @@ async def add_clinical_trials_to_docs(
         fields_to_overwrite_from_metadata=set(),
     )
 
-    await docs.aadd_texts(
+    docs, _ = await docs.aadd_texts(
         texts=[
             Text(
                 text=(
@@ -337,7 +336,7 @@ async def add_clinical_trials_to_docs(
     if client is None:
         await _client.aclose()
 
-    return (total_result_count, len(docs.texts) - initial_docs_size, None)
+    return (docs, total_result_count, len(docs.texts) - initial_docs_size, None)
 
 
 def partition_clinical_trials_by_source(text: Embeddable) -> int:

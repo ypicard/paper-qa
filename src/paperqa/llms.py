@@ -10,7 +10,7 @@ from collections.abc import (
     Sequence,
     Sized,
 )
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 from lmi import (
@@ -70,6 +70,10 @@ class VectorStore(BaseModel, ABC):
 
     def __len__(self) -> int:
         return len(self.texts_hashes)
+
+    async def fork(self) -> "VectorStore":
+        """Return independent writable index state for a corpus operation."""
+        raise NotImplementedError(f"{type(self).__name__} must implement fork()")
 
     @abstractmethod
     async def add_texts_and_embeddings(self, texts: Iterable[Embeddable]) -> None:
@@ -175,6 +179,15 @@ class NumpyVectorStore(VectorStore):  # noqa: PLW1641  # TODO: add __hash__
     _embeddings_matrix: np.ndarray | None = None
     _texts_filter: np.ndarray | None = None
 
+    async def fork(self) -> Self:
+        # Index writes replace the matrix; sharing it avoids copying embedding payloads.
+        return self.model_copy(
+            update={
+                "texts": list(self.texts),
+                "texts_hashes": set(self.texts_hashes),
+            }
+        )
+
     def __eq__(self, other) -> bool:
         if not isinstance(other, type(self)):
             return NotImplemented
@@ -215,15 +228,14 @@ class NumpyVectorStore(VectorStore):  # noqa: PLW1641  # TODO: add __hash__
         texts: list[Sequence[Embeddable]] = []
 
         text_partitions = np.array([partitioning_fn(t) for t in self.texts])
-        # CPU bound so replacing w a gather wouldn't get us anything
-        # plus we need to reset self._texts_filter each iteration
         for partition in np.unique(text_partitions):
-            self._texts_filter = text_partitions == partition
-            _texts, _scores = await self.similarity_search(query, k, embedding_model)
+            partition_index = await self.fork()
+            partition_index._texts_filter = text_partitions == partition
+            _texts, _scores = await partition_index.similarity_search(
+                query, k, embedding_model
+            )
             texts.append(_texts)
             scores.append(_scores)
-        # reset the filter after running
-        self._texts_filter = None
 
         return (
             [
@@ -278,13 +290,46 @@ class QdrantVectorStore(VectorStore):  # noqa: PLW1641  # TODO: add __hash__
     client: Any = Field(
         default=None,
         description=(
-            "Instance of `qdrant_client.AsyncQdrantClient`. Defaults to an in-memory"
-            " instance."
+            "Instance of `qdrant_client.AsyncQdrantClient`. Defaults to an in-memory instance."
         ),
     )
     collection_name: str = Field(default_factory=lambda: f"paper-qa-{uuid.uuid4().hex}")
     vector_name: str | None = Field(default=None)
     _point_ids: set[str] | None = None
+
+    async def fork(self) -> NumpyVectorStore:
+        """Materialize a local snapshot without writing to the backing collection."""
+        snapshot = NumpyVectorStore(mmr_lambda=self.mmr_lambda)
+        texts: list[Text] = []
+        async with asyncio.timeout(60):
+            if not await self._collection_exists():
+                return snapshot
+            offset = None
+            while True:
+                points, offset = await self.client.scroll(
+                    collection_name=self.collection_name,
+                    offset=offset,
+                    limit=100,
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                texts.extend(
+                    [
+                        Text(
+                            **point.payload,
+                            embedding=(
+                                point.vector[self.vector_name]
+                                if self.vector_name
+                                else point.vector
+                            ),
+                        )
+                        for point in points
+                    ]
+                )
+                if offset is None:
+                    break
+        await snapshot.add_texts_and_embeddings(texts)
+        return snapshot
 
     def __del__(self):
         """Cleanup async client connection."""
@@ -325,8 +370,7 @@ class QdrantVectorStore(VectorStore):  # noqa: PLW1641  # TODO: add __hash__
 
         if self.client and not isinstance(self.client, AsyncQdrantClient):
             raise TypeError(
-                "'client' should be an instance of AsyncQdrantClient. Got"
-                f" `{type(self.client)}`"
+                f"'client' should be an instance of AsyncQdrantClient. Got `{type(self.client)}`"
             )
 
         if not self.client:

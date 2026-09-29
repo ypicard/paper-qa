@@ -111,7 +111,7 @@ THIS_MODULE = pathlib.Path(__file__)
 async def fixture_docs_fixture(stub_data_dir: Path) -> Docs:
     docs = Docs()
     with (stub_data_dir / "paper.pdf").open("rb") as f:
-        await docs.aadd_file(
+        docs, _ = await docs.aadd_file(
             f,
             citation="Wellawatte et al, XAI Review, 2023",  # Skip citation inference
             doi="10.1021/acs.jctc.2c01235",  # Skip DOI inference
@@ -681,7 +681,7 @@ async def test_model_chain(
     assert completion.cost > 0
 
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "flag_day.html",
         "National Flag of Canada Day",
         settings=settings,
@@ -698,7 +698,7 @@ async def test_model_chain(
         return result
 
     with patch.object(LLMModel, "call_single", spy_call_single):
-        session = await docs.aget_evidence(
+        docs, session = await docs.aget_evidence(
             "What is the national flag of Canada?", settings=settings
         )
 
@@ -735,13 +735,14 @@ async def test_model_chain(
 @pytest.mark.asyncio
 async def test_docs_lifecycle(subtests: SubTests, stub_data_dir: Path) -> None:
     docs = Docs()
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "flag_day.html",
         citation='"National Flag of Canada Day." WikiMedia Foundation, 2023, Accessed now',  # Skip citation inference
         title="National Flag of Canada Day",  # Skip title inference
         dockey="test",
     )
-    grav_hill_docname = await docs.aadd(
+    assert added
+    docs, grav_hill_docname = await docs.aadd(
         stub_data_dir / "gravity_hill.md",
         citation='"Gravity Hill." WikiMedia Foundation, 2023, Accessed now',  # Skip citation inference
         title="Gravity hill",  # Skip title inference
@@ -752,7 +753,7 @@ async def test_docs_lifecycle(subtests: SubTests, stub_data_dir: Path) -> None:
         assert docs.docs["test"].docname == "National2023"
 
     with subtests.test(msg="text-contains"):
-        await docs.aget_evidence("What is the national flag of Canada?")
+        docs, _ = await docs.aget_evidence("What is the national flag of Canada?")
         assert docs.texts_index.texts_hashes
         assert docs.texts
         assert all(t in docs.texts_index for t in docs.texts)
@@ -762,7 +763,7 @@ async def test_docs_lifecycle(subtests: SubTests, stub_data_dir: Path) -> None:
             d for d in docs.docs.values() if d.docname == grav_hill_docname
         )
         prior_texts_index_size = len(docs.texts_index)
-        docs.delete(docname=grav_hill_docname)
+        docs = docs.delete(docname=grav_hill_docname)
         assert grav_hill_details.dockey not in docs.docs, "Details should be gone"
         assert not [
             t for t in docs.texts if t.doc == grav_hill_details
@@ -785,24 +786,23 @@ async def test_evidence(stub_data_dir: Path) -> None:
     debug_settings.parsing.multimodal = False
 
     docs = Docs()
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "paper.pdf",
         citation="Wellawatte et al, XAI Review, 2023",  # Skip citation inference
         doi="10.1021/acs.jctc.2c01235",  # Skip DOI inference
         title="A Perspective on Explanations of Molecular Prediction Models",  # Skip title inference
         settings=debug_settings,
     )
+    assert added
     assert docs.texts, "Test expects texts to be added"
     assert all(
         not t.media for t in docs.texts
     ), "Expected no media to be parsed with multimodal disabled"
 
-    evidence = (
-        await docs.aget_evidence(
-            PQASession(question="What does XAI stand for?"),
-            settings=debug_settings,
-        )
-    ).contexts
+    docs, result = await docs.aget_evidence(
+        PQASession(question="What does XAI stand for?"), settings=debug_settings
+    )
+    evidence = result.contexts
     assert len(evidence) >= debug_settings.answer.evidence_k
     assert len({e.context for e in evidence}) == len(
         evidence
@@ -825,12 +825,11 @@ async def test_evidence(stub_data_dir: Path) -> None:
     # Let's check we are resilient to bad context creation
     with patch.object(litellm, "acompletion", acompletion_that_breaks_first_context):
         # Let's also check we can get other evidence using the same underlying sources
-        other_evidence = (
-            await docs.aget_evidence(
-                PQASession(question="What is an acronym for explainable AI?"),
-                settings=debug_settings,
-            )
-        ).contexts
+        docs, result = await docs.aget_evidence(
+            PQASession(question="What is an acronym for explainable AI?"),
+            settings=debug_settings,
+        )
+        other_evidence = result.contexts
     assert all(
         c.context != no_score_context_body for c in other_evidence
     ), "Expected context without score to be replaced via retrying"
@@ -866,8 +865,9 @@ async def test_nonduplicate_contexts() -> None:
     # This pattern of pre-populating Docs, whereas it's not the
     # intended flow, it's technically possible
     docs = Docs(texts=[text2])
-    assert await docs.aadd_texts(texts=[text1], doc=doc1)
-    session = await docs.aget_evidence(session)
+    docs, added = await docs.aadd_texts(texts=[text1], doc=doc1)
+    assert added
+    docs, session = await docs.aget_evidence(session)
     assert len(session.contexts) == 1, "Expected just one context"
 
 
@@ -907,12 +907,10 @@ async def test_json_evidence(docs_fixture: Docs) -> None:
 
     # Let's check we are resilient to bad context creation
     with patch.object(litellm, "acompletion", acompletion_that_breaks_first_context):
-        evidence = (
-            await docs_fixture.aget_evidence(
-                PQASession(question="Who wrote this article?"),
-                settings=settings,
-            )
-        ).contexts
+        docs_fixture, result = await docs_fixture.aget_evidence(
+            PQASession(question="Who wrote this article?"), settings=settings
+        )
+        evidence = result.contexts
     evidence_with_authors = [
         c for c in evidence if hasattr(c, "author_name") and c.author_name
     ]
@@ -927,14 +925,13 @@ async def test_ablations(docs_fixture: Docs) -> None:
     settings = Settings()
     settings.answer.evidence_skip_summary = True
     settings.answer.evidence_retrieval = False
-    contexts = (
-        await docs_fixture.aget_evidence(
-            "Which page is the statement 'Deep learning (DL) is advancing the boundaries of"
-            " computational chemistry because it can accurately model non-linear"
-            " structure-function relationships.' on?",
-            settings=settings,
-        )
-    ).contexts
+    docs_fixture, result = await docs_fixture.aget_evidence(
+        "Which page is the statement 'Deep learning (DL) is advancing the boundaries of"
+        " computational chemistry because it can accurately model non-linear"
+        " structure-function relationships.' on?",
+        settings=settings,
+    )
+    contexts = result.contexts
     assert (
         contexts[0].text.text.strip() == contexts[0].context
     ), "summarization not ablated"
@@ -972,15 +969,16 @@ async def test_location_awareness(stub_data_dir: Path) -> None:
     )
 
     docs = Docs()
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "paper.pdf",
         citation="Wellawatte et al, XAI Review, 2023",  # Skip citation inference
         doi="10.1021/acs.jctc.2c01235",  # Skip DOI inference
         title="A Perspective on Explanations of Molecular Prediction Models",  # Skip title inference
         settings=settings,
     )
+    assert added
 
-    session = await docs.aget_evidence(
+    docs, session = await docs.aget_evidence(
         "Which page or page range has the full statement (insensitive to newlines)"
         " 'Deep learning (DL) is advancing the boundaries of computational chemistry"
         " because it can accurately model non-linear structure-function relationships."
@@ -1011,7 +1009,9 @@ async def test_location_awareness(stub_data_dir: Path) -> None:
 @pytest.mark.asyncio
 async def test_query(docs_fixture) -> None:
     settings = Settings(prompts={"answer_iteration_prompt": None})
-    await docs_fixture.aquery("Is XAI usable in chemistry?", settings=settings)
+    docs_fixture, _ = await docs_fixture.aquery(
+        "Is XAI usable in chemistry?", settings=settings
+    )
 
 
 @pytest.mark.asyncio
@@ -1031,7 +1031,7 @@ async def test_custom_context_str_fn(docs_fixture) -> None:
         prompts={"answer_iteration_prompt": None},
     )
 
-    session = await docs_fixture.aquery(
+    docs_fixture, session = await docs_fixture.aquery(
         "Is XAI usable in chemistry?", settings=settings
     )
     assert (
@@ -1077,7 +1077,7 @@ async def test_aquery_groups_contexts_by_question(docs_fixture) -> None:
         },
     )
 
-    result = await docs_fixture.aquery(session, settings=settings)
+    docs_fixture, result = await docs_fixture.aquery(session, settings=settings)
 
     final_context_str = result.context
 
@@ -1125,13 +1125,17 @@ async def test_query_with_iteration(docs_fixture) -> None:
     prior_answer = "No, it isn't usable in chemistry."
     question = "Is XAI usable in chemistry?"
     prior_session = PQASession(question=question, answer=prior_answer)
-    await docs_fixture.aquery(prior_session, llm_model=llm, settings=settings)
+    docs_fixture, prior_session = await docs_fixture.aquery(
+        prior_session, llm_model=llm, settings=settings
+    )
     assert prior_answer in cast(
         "str",
         my_results[-1].prompt[1].content,  # type: ignore[union-attr, index]
     ), "prior answer not in prompt"
     # run without a prior session to check that the flow works correctly
-    await docs_fixture.aquery(question, llm_model=llm, settings=settings)
+    docs_fixture, _ = await docs_fixture.aquery(
+        question, llm_model=llm, settings=settings
+    )
     assert settings.prompts.answer_iteration_prompt[:10] not in cast(  # type: ignore[index]
         "str",
         my_results[-1].prompt[1].content,  # type: ignore[union-attr, index]
@@ -1145,7 +1149,7 @@ async def test_llmresult_callback(docs_fixture: Docs) -> None:
     settings = Settings.from_name("fast")
     summary_llm = settings.get_summary_llm()
     summary_llm.llm_result_callback = my_results.append
-    await docs_fixture.aget_evidence(
+    docs_fixture, _ = await docs_fixture.aget_evidence(
         "What is XAI?", settings=settings, summary_llm_model=summary_llm
     )
     assert my_results
@@ -1186,7 +1190,9 @@ async def test_get_reasoning(docs_fixture: Docs, llm: str, llm_settings: dict) -
         llm=llm,
         llm_config=llm_settings,
     )
-    response = await docs_fixture.aquery("What is XAI?", settings=settings)
+    docs_fixture, response = await docs_fixture.aquery(
+        "What is XAI?", settings=settings
+    )
     assert response.answer_reasoning
 
 
@@ -1196,26 +1202,26 @@ async def test_duplicate(stub_data_dir: Path, tmp_path) -> None:
     docs = Docs()
 
     # First, check adding a straight-up duplicate doc
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "bates.txt",
         citation="WikiMedia Foundation, 2023, Accessed now",
         dockey="test1",
     )
-    assert (
-        await docs.aadd(
-            stub_data_dir / "bates.txt",
-            citation="WikiMedia Foundation, 2023, Accessed now",
-            dockey="test1",
-        )
-        is None
-    ), "Expected duplicate add to indicate no new doc was added"
+    assert added
+    docs, result = await docs.aadd(
+        stub_data_dir / "bates.txt",
+        citation="WikiMedia Foundation, 2023, Accessed now",
+        dockey="test1",
+    )
+    assert result is None, "Expected duplicate add to indicate no new doc was added"
     assert len(docs.docs) == 1, "Should have added only one document"
 
     # Next, check adding a different doc works, and also check citation inference
     common_doi = "10.1234/flag"
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "flag_day.html", dockey="flag_day", doi=common_doi
     )
+    assert added
     assert (
         len(set(docs.docs.keys())) == 2
     ), "Unique documents should be hashed as unique"
@@ -1233,9 +1239,10 @@ async def test_duplicate(stub_data_dir: Path, tmp_path) -> None:
     flag_day_content = await anyio.Path(stub_data_dir / "flag_day.html").read_bytes()
     assert len(flag_day_content) >= 1000, "Expected long file to test truncation"
     await anyio.Path(tmp_path / "flag_day.html").write_bytes(flag_day_content[:-100])
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         tmp_path / "flag_day.html", dockey="flag_day_shorter", doi=common_doi
     )
+    assert added
     assert len(set(docs.docs.keys())) == 3, "Expected a third document to be added"
     shorter_flag_day = docs.docs["flag_day_shorter"]
     assert isinstance(shorter_flag_day, DocDetails)
@@ -1260,7 +1267,7 @@ async def test_docs_with_custom_embedding(
             return [[0.0, 0.28, 0.95] for _ in texts]
 
     docs = Docs(texts_index=vector_store())
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt",
         citation="WikiMedia Foundation, 2023, Accessed now",
         embedding_model=MyEmbeds(),
@@ -1286,7 +1293,7 @@ async def test_docs_with_custom_embedding(
     with subtests.test(msg="copying-after-get-evidence"):
         # After getting evidence, a shallow copy of Docs is not the same because its
         # texts index gets lazily populated, while a deep copy should preserve it
-        _ = await docs.aget_evidence(
+        docs, _ = await docs.aget_evidence(
             "What country is Frederick Bates from?", embedding_model=MyEmbeds()
         )
         docs_shallow_copy = Docs(
@@ -1311,7 +1318,7 @@ async def test_docs_with_custom_embedding(
         assert docs.texts_index.texts_hashes
 
         # Clear the vector store via Docs
-        docs.clear_docs()
+        docs = docs.clear_docs()
 
         # Verify the vector store is empty
         if isinstance(docs.texts_index, QdrantVectorStore):
@@ -1327,7 +1334,7 @@ async def test_sparse_embedding(
     stub_data_dir: Path, vector_store: type[VectorStore]
 ) -> None:
     docs = Docs(texts_index=vector_store())
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt",
         citation="WikiMedia Foundation, 2023, Accessed now",
         embedding_model=SparseEmbeddingModel(),
@@ -1355,7 +1362,7 @@ async def test_hybrid_embedding(
         models=[LiteLLMEmbeddingModel(), SparseEmbeddingModel()]
     )
     docs = Docs(texts_index=vector_store())
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt",
         citation="WikiMedia Foundation, 2023, Accessed now",
         embedding_model=emb_model,
@@ -1374,7 +1381,7 @@ async def test_hybrid_embedding(
     emb_settings = Settings(
         embedding="hybrid-text-embedding-3-small",
     )
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt",
         citation="WikiMedia Foundation, 2023, Accessed now",
         embedding_model=emb_settings.get_embedding_model(),
@@ -1423,7 +1430,7 @@ async def test_custom_llm_custom_media(stub_data_dir: Path) -> None:
             """This is a dummy check."""
 
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt",
         citation="WikiMedia Foundation, 2023, Accessed now",
         dockey="test",
@@ -1434,7 +1441,7 @@ async def test_custom_llm_custom_media(stub_data_dir: Path) -> None:
         "https://storage.googleapis.com/test-bucket/img.png"
         "?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Signature=abc"
     )
-    await docs.aadd_texts(
+    docs, _ = await docs.aadd_texts(
         texts=[
             Text(
                 text="This chunk contains an image from GCS.",
@@ -1450,7 +1457,7 @@ async def test_custom_llm_custom_media(stub_data_dir: Path) -> None:
         prompts={"use_json": False},
         answer={"evidence_retrieval": False, "evidence_skip_summary": False},
     )
-    session = await docs.aget_evidence(
+    docs, session = await docs.aget_evidence(
         "Echo", summary_llm_model=StubLLMModel(), settings=settings
     )
     assert session.contexts, "Expected at least one context"
@@ -1479,7 +1486,7 @@ async def test_custom_llm_custom_media(stub_data_dir: Path) -> None:
 async def test_docs_pickle(stub_data_dir) -> None:
     """Ensure that Docs object can be pickled and unpickled correctly."""
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "flag_day.html",
         "WikiMedia Foundation, 2023, Accessed now",
         dockey="test",
@@ -1515,11 +1522,12 @@ async def test_unrelated_context(
     assert unsure_sentinel in qa_prompt, "Test relies on unsure sentinel in qa prompt"
 
     docs = Docs()
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
+    assert added
     assert docs.texts, "Test requires at least one text"
-    session = await docs.aget_evidence(
+    docs, session = await docs.aget_evidence(
         "What do scientist estimate as the planetary composition of Jupyter?",
         settings=agent_test_settings,
     )
@@ -1533,24 +1541,24 @@ async def test_unrelated_context(
     )
     for c in session.contexts:
         assert c.score <= 2, "Expected contexts to be considered irrelevant"
-    session = await docs.aquery(session, settings=agent_test_settings)
+    docs, session = await docs.aquery(session, settings=agent_test_settings)
     assert unsure_sentinel in session.answer
 
 
 @pytest.mark.asyncio
 async def test_repeat_keys(stub_data_dir) -> None:
     docs = Docs()
-    result = await docs.aadd(
+    docs, result = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
     assert result
-    result = await docs.aadd(
+    docs, result = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
     assert not result
     assert len(docs.docs) == 1
 
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "flag_day.html", "WikiMedia Foundation, 2023, Accessed now"
     )
     assert len(docs.docs) == 2
@@ -1564,7 +1572,7 @@ async def test_repeat_keys(stub_data_dir) -> None:
 @pytest.mark.asyncio
 async def test_pdf_reader_w_no_match_doc_details(stub_data_dir: Path) -> None:
     docs = Docs()
-    docname = await docs.aadd(
+    docs, docname = await docs.aadd(
         stub_data_dir / "paper.pdf",
         "Wellawatte et al, XAI Review, 2023",
     )
@@ -1590,7 +1598,7 @@ async def test_pdf_reader_w_no_chunks(stub_data_dir: Path) -> None:
     settings.summary_llm = "gpt-4o-mini"  # context window needs to fit our one chunk
 
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "paper.pdf",
         "Wellawatte et al, XAI Review, 2023",
         settings=settings,
@@ -1626,19 +1634,21 @@ async def test_partly_embedded_texts(defer_embeddings: bool) -> None:
     ), "Test assumes different texts"
 
     # 1. Add texts, noting some are partly embedded
-    await docs.aadd_texts(texts=texts_to_add, doc=stub_doc)
-    assert docs.texts == texts_to_add
+    docs, _ = await docs.aadd_texts(texts=texts_to_add, doc=stub_doc, settings=settings)
+    assert [t.text for t in docs.texts] == [t.text for t in texts_to_add]
     assert not docs.texts_index.texts
     assert not docs.texts_index.texts_hashes
 
     # 2. Gather evidence should work
-    await docs.aget_evidence("What do I like?")
-    assert docs.texts_index.texts == docs.texts == texts_to_add
+    docs, _ = await docs.aget_evidence("What do I like?")
+    assert docs.texts_index.texts == docs.texts
+    assert texts_to_add[1].embedding is None
     assert len(docs.texts_index.texts_hashes) == len(texts_to_add)
 
     # 3. Gathering evidence again should not change shapes
-    await docs.aget_evidence("What was it that I liked?")
-    assert docs.texts_index.texts == docs.texts == texts_to_add
+    docs, _ = await docs.aget_evidence("What was it that I liked?")
+    assert docs.texts_index.texts == docs.texts
+    assert texts_to_add[1].embedding is None
     assert len(docs.texts_index.texts_hashes) == len(texts_to_add)
 
 
@@ -1650,7 +1660,7 @@ async def test_partly_embedded_texts(defer_embeddings: bool) -> None:
 @pytest.mark.asyncio
 async def test_pdf_reader_match_doc_details(stub_data_dir: Path) -> None:
     docs = Docs()
-    docname = await docs.aadd(
+    docs, docname = await docs.aadd(
         stub_data_dir / "paper.pdf",
         "Wellawatte et al, A Perspective on Explanations of Molecular Prediction"
         " Models, XAI Review, 2023",
@@ -1695,7 +1705,7 @@ async def test_pdf_reader_match_doc_details(stub_data_dir: Path) -> None:
 
     num_retries = 3
     for _ in range(num_retries):
-        session = await docs.aquery("Are counterfactuals actionable? [yes/no]")
+        docs, session = await docs.aquery("Are counterfactuals actionable? [yes/no]")
         if any(w in session.answer for w in ("yes", "Yes")):
             assert f"This article has {num_citations} citations" in session.context
             assert any(
@@ -1712,10 +1722,10 @@ async def test_pdf_reader_match_doc_details(stub_data_dir: Path) -> None:
 async def test_fileio_reader_pdf(stub_data_dir: Path) -> None:
     docs = Docs()
     with (stub_data_dir / "paper.pdf").open("rb") as f:
-        await docs.aadd_file(f, "Wellawatte et al, XAI Review, 2023")
+        docs, _ = await docs.aadd_file(f, "Wellawatte et al, XAI Review, 2023")
     num_retries = 3
     for _ in range(num_retries):
-        session = await docs.aquery("Are counterfactuals actionable? [yes/no]")
+        docs, session = await docs.aquery("Are counterfactuals actionable? [yes/no]")
         if any(w in session.answer for w in ("yes", "Yes")):
             return
     raise AssertionError(f"Query was incorrect across {num_retries} retries.")
@@ -1728,11 +1738,11 @@ async def test_fileio_reader_txt(stub_data_dir: Path) -> None:
     with (stub_data_dir / "bates.txt").open("rb") as file:
         file_content = file.read()
 
-    await docs.aadd_file(
+    docs, _ = await docs.aadd_file(
         BytesIO(file_content),
         "WikiMedia Foundation, 2023, Accessed now",
     )
-    session = await docs.aquery("What country was Frederick Bates born in?")
+    docs, session = await docs.aquery("What country was Frederick Bates born in?")
     assert "United States" in session.answer
 
 
@@ -2139,7 +2149,7 @@ async def test_image_enrichment_normal_use(stub_data_dir: Path) -> None:
         parsing=ParsingSettings(multimodal=MultimodalOptions.ON_WITHOUT_ENRICHMENT),
     )
     unenriched_docs = Docs()
-    await unenriched_docs.aadd(
+    unenriched_docs, _ = await unenriched_docs.aadd(
         stub_data_dir / "paper.pdf",
         citation="Wellawatte et al, XAI Review, 2023",  # Skip citation inference
         doi="10.1021/acs.jctc.2c01235",  # Skip DOI inference
@@ -2158,13 +2168,14 @@ async def test_image_enrichment_normal_use(stub_data_dir: Path) -> None:
         parsing=ParsingSettings(multimodal=MultimodalOptions.ON_WITH_ENRICHMENT),
     )
     enriched_docs = Docs()
-    assert await enriched_docs.aadd(
+    enriched_docs, added = await enriched_docs.aadd(
         stub_data_dir / "paper.pdf",
         citation="Wellawatte et al, XAI Review, 2023",  # Skip citation inference
         doi="10.1021/acs.jctc.2c01235",  # Skip DOI inference
         title="A Perspective on Explanations of Molecular Prediction Models",  # Skip title inference
         settings=enriched_settings,
     )
+    assert added
     enriched_mm_texts = [t for t in enriched_docs.texts if t.media]
     assert all(
         m.info.get("enriched_description") for t in enriched_mm_texts for m in t.media
@@ -2195,13 +2206,13 @@ async def test_image_enrichment_normal_use(stub_data_dir: Path) -> None:
     if "f(x)" in fig1_enrichment:
         # If Figure 1's question is answerable, try to answer with it
         try:
-            unenriched_session1 = await unenriched_docs.aquery(
+            unenriched_docs, unenriched_session1 = await unenriched_docs.aquery(
                 fig1_question, settings=unenriched_settings
             )
             assert (
                 CANNOT_ANSWER_PHRASE in unenriched_session1.answer
             ), "Expected unsure without enrichment"
-            enriched_session1 = await enriched_docs.aquery(
+            enriched_docs, enriched_session1 = await enriched_docs.aquery(
                 fig1_question, settings=enriched_settings
             )
             assert [
@@ -2227,13 +2238,13 @@ async def test_image_enrichment_normal_use(stub_data_dir: Path) -> None:
 
     # Otherwise use Figure 3's question
     try:
-        unenriched_session2 = await unenriched_docs.aquery(
+        unenriched_docs, unenriched_session2 = await unenriched_docs.aquery(
             fig3_question, settings=unenriched_settings
         )
         assert (
             CANNOT_ANSWER_PHRASE in unenriched_session2.answer
         ), "Expected unsure without enrichment"
-        enriched_session2 = await enriched_docs.aquery(
+        enriched_docs, enriched_session2 = await enriched_docs.aquery(
             fig3_question, settings=enriched_settings
         )
         assert [
@@ -2326,11 +2337,13 @@ async def test_code() -> None:
     settings = Settings.from_name("fast")
     docs = Docs()
     # load this script
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         THIS_MODULE, "test_paperqa.py", docname="test_paperqa.py", disable_check=True
     )
     assert len(docs.docs) == 1
-    session = await docs.aquery("What file is read in by test_code?", settings=settings)
+    docs, session = await docs.aquery(
+        "What file is read in by test_code?", settings=settings
+    )
     assert "test_paperqa.py" in session.answer
 
 
@@ -2339,7 +2352,8 @@ async def test_querying_tables(stub_data_dir: Path) -> None:
     settings = Settings.from_name("fast")
 
     docs = Docs()
-    assert await docs.aadd(stub_data_dir / "influence.pdf", settings=settings)
+    docs, added = await docs.aadd(stub_data_dir / "influence.pdf", settings=settings)
+    assert added
     # Now, let's modify the system so any tables housed in the Text.text get removed,
     # and the system can only rely on table images or markdown
     texts_with_tables = {
@@ -2354,7 +2368,7 @@ async def test_querying_tables(stub_data_dir: Path) -> None:
         # Wipe non-table media (e.g. images)
         t.media = [m for m in t.media if m.info.get("type") == "table"]
     docs.texts = list(texts_with_tables)
-    session = await docs.aquery(
+    docs, session = await docs.aquery(
         "What osteotomy gap (mm) has the bone volume per slice?", settings=settings
     )
     assert session.used_contexts
@@ -2389,7 +2403,7 @@ async def test_images(stub_data_dir: Path) -> None:
     settings.prompts.summary_json_system = summary_json_multimodal_system_prompt
 
     docs = Docs()
-    districts_docname = await docs.aadd(
+    docs, districts_docname = await docs.aadd(
         stub_data_dir / "sf_districts.png",
         citation=(
             '"File:San francisco districts.png." Wikimedia Commons.'
@@ -2401,7 +2415,7 @@ async def test_images(stub_data_dir: Path) -> None:
     )
     assert districts_docname, "Expected successful image addition"
     (districts_doc,) = (d for d in docs.docs.values() if d.docname == districts_docname)
-    session = await docs.aquery(
+    docs, session = await docs.aquery(
         "What districts neighbor the Western Addition?", settings=settings
     )
     assert (
@@ -2429,17 +2443,18 @@ async def test_duplicate_media_context_creation(stub_data_dir: Path) -> None:
     )
 
     docs = Docs()
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "duplicate_media.pdf",
         citation="FutureHouse, 2025, Accessed now",  # Skip citation inference
         title="SF Districts in the style of Andy Warhol, with Math",  # Skip title inference
         settings=settings,
     )
+    assert added
     num_raw_media = sum(len(t.media) for t in docs.texts)
     with patch.object(
         LLMModel, "call_single", side_effect=LLMModel.call_single, autospec=True
     ) as mock_call_single:
-        session = await docs.aquery(
+        docs, session = await docs.aquery(
             "What districts neighbor the Western Addition?", settings=settings
         )
     context_user_msg = mock_call_single.await_args_list[0][1]["messages"][1]
@@ -2472,7 +2487,7 @@ async def test_images_corrupt(stub_data_dir: Path, caplog) -> None:
     settings.prompts.summary_json_system = summary_json_multimodal_system_prompt
 
     docs = Docs()
-    districts_docname = await docs.aadd(
+    docs, districts_docname = await docs.aadd(
         stub_data_dir / "sf_districts.png",
         citation=(
             '"File:San francisco districts.png." Wikimedia Commons.'
@@ -2496,7 +2511,7 @@ async def test_images_corrupt(stub_data_dir: Path, caplog) -> None:
                 validate_image(io.BytesIO(m.data))
 
     # With a garbage image, we can't make contexts. So let's confirm that's the case
-    session = await docs.aget_evidence(
+    docs, session = await docs.aget_evidence(
         "What districts neighbor the Western Addition?", settings=settings
     )
     assert not session.contexts, "Expected no contexts to be made from a bad image."
@@ -2510,7 +2525,7 @@ async def test_images_corrupt(stub_data_dir: Path, caplog) -> None:
 
     # By suppressing the use of images, we can actually gather evidence now
     settings.answer.evidence_text_only_fallback = True
-    session = await docs.aget_evidence(
+    docs, session = await docs.aget_evidence(
         "What districts neighbor the Western Addition?", settings=settings
     )
     assert (
@@ -2533,12 +2548,13 @@ async def test_equations(stub_data_dir: Path, parser: PDFParserFn) -> None:
     settings = Settings(parsing={"parse_pdf": parser})
 
     docs = Docs()
-    assert await docs.aadd(
+    docs, added = await docs.aadd(
         stub_data_dir / "duplicate_media.pdf",
         citation="FutureHouse, 2025, Accessed now",  # Skip citation inference
         title="SF Districts in the style of Andy Warhol, with Math",  # Skip title inference
         settings=settings,
     )
+    assert added
     assert docs.texts
     enrichments = []  # Use to debug flaky tests
     for m in docs.texts[0].media:
@@ -2591,11 +2607,11 @@ async def test_too_much_evidence(
     doc_path = stub_data_dir / "obama.txt"
     mini_settings = Settings(llm="gpt-4o-mini", summary_llm="gpt-4o-mini")
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         doc_path, "WikiMedia Foundation, 2023, Accessed now", settings=mini_settings
     )
     # add with new dockey
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir_w_near_dupes / "obama_modified.txt",
         "WikiMedia Foundation, 2023, Accessed now",
         settings=mini_settings,
@@ -2603,7 +2619,9 @@ async def test_too_much_evidence(
     settings = Settings.from_name("fast")
     settings.answer.evidence_k = 10
     settings.answer.answer_max_sources = 10
-    await docs.aquery("What is Barrack's greatest accomplishment?", settings=settings)
+    docs, _ = await docs.aquery(
+        "What is Barrack's greatest accomplishment?", settings=settings
+    )
 
 
 @pytest.mark.asyncio
@@ -2616,10 +2634,10 @@ async def test_custom_prompts(stub_data_dir: Path) -> None:
     settings = Settings.from_name("fast")
     settings.prompts.qa = my_qaprompt
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
-    session = await docs.aquery(
+    docs, session = await docs.aquery(
         "What country is Frederick Bates from?", settings=settings
     )
     assert "United States" in session.answer
@@ -2632,18 +2650,15 @@ async def test_pre_prompt(stub_data_dir: Path) -> None:
     settings = Settings.from_name("fast")
     settings.prompts.pre = pre
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
-    assert (
-        "212" not in (await docs.aquery("What is the boiling point of water?")).answer
+    docs, result = await docs.aquery("What is the boiling point of water?")
+    assert "212" not in result.answer
+    docs, result = await docs.aquery(
+        "What is the boiling point of water?", settings=settings
     )
-    assert (
-        "212"
-        in (
-            await docs.aquery("What is the boiling point of water?", settings=settings)
-        ).answer
-    )
+    assert "212" in result.answer
 
 
 @pytest.mark.asyncio
@@ -2652,24 +2667,25 @@ async def test_post_prompt(stub_data_dir: Path) -> None:
     settings = Settings.from_name("fast")
     settings.prompts.post = post
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
-    response = await docs.aquery("What country is Bates from?", settings=settings)
+    docs, response = await docs.aquery("What country is Bates from?", settings=settings)
     assert "up" in response.answer.lower()
 
 
 @pytest.mark.asyncio
 async def test_external_doc_index(stub_data_dir: Path) -> None:
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "flag_day.html", "WikiMedia Foundation, 2023, Accessed now"
     )
     # force embedding
-    _ = await docs.aget_evidence(query="What is the date of flag day?")
+    docs, _ = await docs.aget_evidence(query="What is the date of flag day?")
     docs2 = Docs(texts_index=docs.texts_index)
     assert not docs2.docs
-    assert (await docs2.aget_evidence("What is the date of flag day?")).contexts
+    docs2, result = await docs2.aget_evidence("What is the date of flag day?")
+    assert result.contexts
 
 
 @pytest.mark.asyncio
@@ -2689,10 +2705,10 @@ async def test_context_inner_outer_prompt(stub_data_dir: Path) -> None:
     settings.prompts.context_inner = "{name} @@@@@ {text}\nFrom: {citation}"
     settings.prompts.context_outer = "{context_str}"
     docs = Docs()
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         stub_data_dir / "bates.txt", "WikiMedia Foundation, 2023, Accessed now"
     )
-    response = await docs.aquery("What country is Bates from?", settings=settings)
+    docs, response = await docs.aquery("What country is Bates from?", settings=settings)
     assert "@@@@@" in response.context
     assert "WikiMedia Foundation, 2023" in response.context
     assert "Valid Keys" not in response.context
@@ -3084,11 +3100,11 @@ async def test_partitioning_fn_docs(use_partition: bool) -> None:
         texts[-1].embedding = (
             await settings.get_embedding_model().embed_documents([texts[-1].text])
         )[0]
-    await docs.aadd_texts(
+    docs, _ = await docs.aadd_texts(
         texts=[t for t in texts if t.doc.docname == "positive"],
         doc=positive_statements_doc,
     )
-    await docs.aadd_texts(
+    docs, _ = await docs.aadd_texts(
         texts=[t for t in texts if t.doc.docname == "negative"],
         doc=negative_statements_doc,
     )
@@ -3140,7 +3156,7 @@ async def test_partitioning_fn_docs(use_partition: bool) -> None:
     # without partitioning, the "I like X" statements would be ranked first
     # with partitioning, we are forcing them to be interleaved, thus
     # at least one "I don't like X" statements will be in the top 2
-    session = await docs.aget_evidence(
+    docs, session = await docs.aget_evidence(
         "What do I like or dislike?", settings=settings, partitioning_fn=partitioning_fn
     )
     assert docs.texts_index.texts == docs.texts == texts
@@ -3660,7 +3676,7 @@ async def test_reader_config_propagation(stub_data_dir: Path, multimodal: bool) 
         ) as mock_read_doc,
         pytest.raises(RuntimeError, match="sentinel"),
     ):
-        await docs.aadd(
+        docs, _ = await docs.aadd(
             stub_data_dir / "paper.pdf",
             citation="Wellawatte et al, XAI Review, 2023",  # Skip citation inference
             doi="10.1021/acs.jctc.2c01235",  # Skip DOI inference
@@ -3694,7 +3710,7 @@ async def test_parse_office_doc(stub_data_dir: Path, filename: str, query: str) 
         agent={"agent_llm": "gemini/gemini-2.5-flash"},
         parsing=ParsingSettings(use_doc_details=False),
     )
-    docname = await docs.aadd(
+    docs, docname = await docs.aadd(
         stub_data_dir / filename,
         citation="dummy citation",
         docname=filename,
@@ -3702,7 +3718,7 @@ async def test_parse_office_doc(stub_data_dir: Path, filename: str, query: str) 
     )
     assert docname is not None
     assert docs.texts
-    session = await docs.aquery(query, settings=settings)
+    docs, session = await docs.aquery(query, settings=settings)
     assert session.used_contexts
     assert len(session.answer) > 10, "Expected an answer"
     assert CANNOT_ANSWER_PHRASE not in session.answer, "Expected the system to be sure"

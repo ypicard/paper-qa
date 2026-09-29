@@ -69,6 +69,7 @@ from paperqa_nemotron import parse_pdf_to_pages
 async def main(pdf_path, question: str | PQASession) -> PQASession:
     settings = Settings(parsing={"parse_pdf": parse_pdf_to_pages})
     docs = Docs()
-    await docs.aadd(pdf_path, settings=settings)
-    return await docs.aquery(question, settings=settings)
+    docs, _ = await docs.aadd(pdf_path, settings=settings)
+    docs, session = await docs.aquery(question, settings=settings)
+    return session
 ```

@@ -109,8 +109,7 @@ class NamedTool(BaseModel):
 class PaperSearch(NamedTool):
     TOOL_FN_NAME = "paper_search"
 
-    # This tool is safe to run concurrently. The only stateful operation on the state
-    # is docs.aadd_texts, which itself is concurrency safe.
+    # Merge each completed acquisition without yielding to another state writer.
     CONCURRENCY_SAFE = True
 
     settings: Settings
@@ -191,12 +190,13 @@ class PaperSearch(NamedTool):
             # there's only one doc per result, so just take the first one
             this_doc_details = cast("DocDetails", next(iter(r.docs.values())))
             all_doc_details.append(this_doc_details)
-            await state.docs.aadd_texts(
+            updated_docs, _ = await state.docs.aadd_texts(
                 texts=r.texts,
                 doc=this_doc_details,
                 settings=self.settings,
                 embedding_model=self.embedding_model,
             )
+            state.docs = state.docs.merge([updated_docs])
 
         status = state.status
         logger.info(status)
@@ -260,7 +260,7 @@ class GatherEvidence(NamedTool):
             state.session.question = question
 
             # TODO: refactor answer out of this...
-            state.session = await state.docs.aget_evidence(
+            state.docs, state.session = await state.docs.aget_evidence(
                 query=state.session,
                 settings=self.settings,
                 embedding_model=self.embedding_model,
@@ -343,7 +343,7 @@ class GenerateAnswer(NamedTool):
                 )
             )
 
-        state.session = await state.docs.aquery(
+        state.docs, state.session = await state.docs.aquery(
             query=state.session,
             settings=self.settings,
             llm_model=self.llm_model,
@@ -668,7 +668,7 @@ class ClinicalTrialsSearch(NamedTool):
         except KeyError:
             offset = self.previous_searches[query] = 0
 
-        total_result_count, new_result_count, error_message = (
+        updated_docs, total_result_count, new_result_count, error_message = (
             await add_clinical_trials_to_docs(
                 query,
                 state.docs,
@@ -677,6 +677,7 @@ class ClinicalTrialsSearch(NamedTool):
                 offset=offset,
             )
         )
+        state.docs = state.docs.merge([updated_docs])
         # mark how far we've searched so that continuation will start at the right place
         self.previous_searches[query] += self.search_count
         if error_message is None:

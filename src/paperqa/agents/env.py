@@ -242,7 +242,7 @@ class PaperQAEnvironment(Environment[EnvironmentState]):
 
     async def _reset_docs(self) -> None:
         """Hook to reset the docs when creating the initial state."""
-        self._docs.clear_docs()
+        self._docs = self._docs.clear_docs()
 
     async def make_initial_state(self) -> EnvironmentState:
         await self._reset_docs()

@@ -102,7 +102,8 @@ async def test_parse_pdf_to_pages() -> None:
     assert fig_1_text.media, "Expecting media to test multimodality"
     fig_1_text.text = "stub"  # Replace text to confirm multimodality works
     docs = Docs()
-    assert await docs.aadd_texts(texts=[fig_1_text], doc=doc)
+    docs, added = await docs.aadd_texts(texts=[fig_1_text], doc=doc)
+    assert added
     for query, answer_checks in (
         ("What actions can the Crawler take?", [(("search", "expand", "stop"), 2)]),
         ("What actions can the Selector take?", [(("select", "drop"), 2)]),
@@ -111,7 +112,7 @@ async def test_parse_pdf_to_pages() -> None:
             [r"two|2|(?=.*paper queue)(?=.*selector)"],
         ),
     ):
-        session = await docs.aquery(query=query)
+        docs, session = await docs.aquery(query=query)
         assert session.contexts, "Expected contexts to be generated"
         assert all(
             c.text.text == fig_1_text.text and c.text.media == fig_1_text.media

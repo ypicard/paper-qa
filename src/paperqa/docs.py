@@ -8,11 +8,12 @@ import re
 import tempfile
 import urllib.request
 import warnings
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any, BinaryIO, Self, cast
 from uuid import UUID, uuid4
 
 from aviary.core import Message
@@ -40,6 +41,19 @@ from paperqa.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_session(query: PQASession | str, config_md5: str) -> PQASession:
+    if isinstance(query, str):
+        return PQASession(question=query, config_md5=config_md5)
+    return query.model_copy(
+        update={
+            "contexts": list(query.contexts),
+            "token_counts": {
+                key: list(value) for key, value in query.token_counts.items()
+            },
+        }
+    )
 
 
 class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
@@ -75,11 +89,17 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
             # NOTE: ignoring deleted_dockeys
         )
 
-    def clear_docs(self) -> None:
-        self.texts = []
-        self.docs = {}
-        self.docnames = set()
-        self.texts_index.clear()
+    def clear_docs(self) -> Self:
+        """Return an empty corpus without changing this collection."""
+        return self.model_copy(
+            update={
+                "texts": [],
+                "docs": {},
+                "docnames": set(),
+                "texts_index": NumpyVectorStore(),
+                "deleted_dockeys": set(),
+            }
+        )
 
     def _get_unique_name(self, docname: str) -> str:
         """Create a unique name given proposed name."""
@@ -103,8 +123,8 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         llm_model: LLMModel | None = None,
         embedding_model: EmbeddingModel | None = None,
         **kwargs,
-    ) -> str | None:
-        """Add a document to the collection."""
+    ) -> tuple[Self, str | None]:
+        """Return the updated corpus and added document name, or None for a duplicate."""
         # just put in temp file and use existing method
         suffix = ".txt"
         if maybe_is_pdf(file):
@@ -138,8 +158,8 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         settings: MaybeSettings = None,
         llm_model: LLMModel | None = None,
         embedding_model: EmbeddingModel | None = None,
-    ) -> str | None:
-        """Add a document to the collection."""
+    ) -> tuple[Self, str | None]:
+        """Return the updated corpus and added document name, or None for a duplicate."""
         with urllib.request.urlopen(url) as f:  # noqa: ASYNC210, S310
             # need to wrap to enable seek
             file = BytesIO(f.read())
@@ -166,8 +186,8 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         llm_model: LLMModel | None = None,
         embedding_model: EmbeddingModel | None = None,
         **kwargs,
-    ) -> str | None:
-        """Add a document to the collection."""
+    ) -> tuple[Self, str | None]:
+        """Return the updated corpus and added document name, or None for a duplicate."""
         all_settings = get_settings(settings)
         parse_config = all_settings.parsing
         content_hash = md5sum(path)
@@ -333,9 +353,10 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
                 f"This does not look like a text document: {path}. Pass disable_check"
                 " to ignore this error."
             )
-        if await self.aadd_texts(texts, doc, all_settings, embedding_model):
-            return doc.docname
-        return None
+        updated, added = await self.aadd_texts(
+            texts, doc, all_settings, embedding_model
+        )
+        return updated, updated.docs[doc.dockey].docname if added else None
 
     async def aadd_texts(
         self,
@@ -343,17 +364,17 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         doc: Doc,
         settings: MaybeSettings = None,
         embedding_model: EmbeddingModel | None = None,
-    ) -> bool:
+    ) -> tuple[Self, bool]:
         """
-        Add chunked texts to the collection.
+        Return a corpus containing the chunked texts without changing the inputs.
 
         This is useful to use if you have already chunked the texts yourself.
 
         Returns:
-            True if the doc was added, otherwise False if already in the collection.
+            Updated corpus and whether the document passed filters and was added.
         """
         if doc.dockey in self.docs:
-            return False
+            return self, False
         if not texts:
             raise ValueError("No texts to add.")
 
@@ -365,48 +386,87 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         # 0. Short-circuit if it is caught by a filter
         for doc_filter in all_settings.parsing.doc_filters or []:
             if not doc.matches_filter_criteria(doc_filter):
-                return False
+                return self, False
 
-        # 1. Calculate text embeddings if not already present
-        if embedding_model and texts[0].embedding is None:
+        texts = [
+            text.model_copy() if text.embedding is None else text for text in texts
+        ]
+        to_embed = [text for text in texts if text.embedding is None]
+        if embedding_model and to_embed:
             for t, t_embedding in zip(
-                texts,
+                to_embed,
                 await embedding_model.embed_documents(
                     texts=await asyncio.gather(
                         *(
                             t.get_embeddable_text(
                                 all_settings.parsing.should_parse_and_enrich_media[1]
                             )
-                            for t in texts
+                            for t in to_embed
                         )
                     )
                 ),
                 strict=True,
             ):
                 t.embedding = t_embedding
-        # 2. Update texts' and Doc's name
-        if doc.docname in self.docnames:
-            new_docname = self._get_unique_name(doc.docname)
-            for t in texts:
-                t.name = t.name.replace(doc.docname, new_docname)
-            doc.docname = new_docname
-        # 3. Update self
-        # NOTE: we defer adding texts to the texts index to retrieval time
-        # (e.g. `self.texts_index.add_texts_and_embeddings(texts)`)
-        if doc.docname and doc.dockey:
-            self.docs[doc.dockey] = doc
-            self.texts += texts
-            self.docnames.add(doc.docname)
-            return True
-        return False
+        return self._insert_texts(texts, doc)
+
+    def _insert_texts(self, texts: list[Text], doc: Doc) -> tuple[Self, bool]:
+        if doc.dockey in self.docs:
+            return self, False
+        if not texts:
+            raise ValueError("No texts to add.")
+        if not doc.docname or not doc.dockey:
+            return self, False
+        new_name = self._get_unique_name(doc.docname)
+        added_doc = doc.model_copy(update={"docname": new_name})
+        added_texts = [
+            text.model_copy(
+                update={
+                    "doc": added_doc,
+                    "name": text.name.replace(doc.docname, new_name),
+                }
+            )
+            for text in texts
+        ]
+        return (
+            self.model_copy(
+                update={
+                    "docs": {**self.docs, doc.dockey: added_doc},
+                    "texts": [*self.texts, *added_texts],
+                    "docnames": self.docnames | {new_name},
+                    "deleted_dockeys": self.deleted_dockeys - {doc.dockey},
+                    "texts_index": (
+                        NumpyVectorStore(mmr_lambda=self.texts_index.mmr_lambda)
+                        if doc.dockey in self.deleted_dockeys
+                        else self.texts_index
+                    ),
+                }
+            ),
+            True,
+        )
+
+    def merge(self, sources: Sequence[Docs]) -> Self:
+        """Return the union of already acquired corpora without embedding or filtering.
+
+        Keep the first document for each key. Retrieval embeds any missing vectors.
+        """
+        updated = self
+        for source in sources:
+            texts_by_key: dict[DocKey, list[Text]] = defaultdict(list)
+            for text in source.texts:
+                texts_by_key[text.doc.dockey].append(text)
+            for doc in source.docs.values():
+                if texts := texts_by_key.get(doc.dockey):
+                    updated, _ = updated._insert_texts(texts, doc)
+        return updated
 
     def delete(
         self,
         name: str | None = None,
         docname: str | None = None,
         dockey: DocKey | None = None,
-    ) -> None:
-        """Delete a document from the collection."""
+    ) -> Self:
+        """Return a corpus without the selected document."""
         # name is an alias for docname
         if name and docname and name != docname:
             raise ValueError(
@@ -426,32 +486,45 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         if name is not None:
             doc = next((doc for doc in self.docs.values() if doc.docname == name), None)
             if doc is None:
-                return
-            if doc.docname and doc.dockey:
-                self.docnames.remove(doc.docname)
-                dockey = doc.dockey
-        del self.docs[dockey]
-        self.deleted_dockeys.add(dockey)
-        self.texts = list(filter(lambda x: x.doc.dockey != dockey, self.texts))
+                return self
+            dockey = doc.dockey
+        removed = self.docs[dockey]
+        return self.model_copy(
+            update={
+                "docs": {key: doc for key, doc in self.docs.items() if key != dockey},
+                "docnames": self.docnames - {removed.docname},
+                "deleted_dockeys": self.deleted_dockeys | {dockey},
+                "texts": [text for text in self.texts if text.doc.dockey != dockey],
+            }
+        )
 
     async def _build_texts_index(
         self, embedding_model: EmbeddingModel, with_enrichment: bool = False
-    ) -> None:
+    ) -> Self:
         texts = [t for t in self.texts if t not in self.texts_index]
-        # For any embeddings we are supposed to lazily embed, embed them now
         to_embed = [t for t in texts if t.embedding is None]
+        replacements = {}
         if to_embed:
-            for t, t_embedding in zip(
-                to_embed,
-                await embedding_model.embed_documents(
-                    texts=await asyncio.gather(
-                        *(t.get_embeddable_text(with_enrichment) for t in to_embed)
-                    )
-                ),
-                strict=True,
-            ):
-                t.embedding = t_embedding
-        await self.texts_index.add_texts_and_embeddings(texts)
+            embeddings = await embedding_model.embed_documents(
+                texts=await asyncio.gather(
+                    *(t.get_embeddable_text(with_enrichment) for t in to_embed)
+                )
+            )
+            replacements = {
+                id(text): text.model_copy(update={"embedding": embedding})
+                for text, embedding in zip(to_embed, embeddings, strict=True)
+            }
+        index = await self.texts_index.fork()
+        if texts:
+            await index.add_texts_and_embeddings(
+                [replacements.get(id(text), text) for text in texts]
+            )
+        return self.model_copy(
+            update={
+                "texts": [replacements.get(id(text), text) for text in self.texts],
+                "texts_index": index,
+            }
+        )
 
     async def retrieve_texts(
         self,
@@ -460,24 +533,22 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         settings: MaybeSettings = None,
         embedding_model: EmbeddingModel | None = None,
         partitioning_fn: Callable[[Embeddable], int] | None = None,
-    ) -> list[Text]:
-        """Perform MMR search with the input query on the internal index."""
+    ) -> tuple[Self, list[Text]]:
+        """Return the corpus with reusable retrieval state and matching texts."""
         settings = get_settings(settings)
         if embedding_model is None:
             embedding_model = settings.get_embedding_model()
 
-        # TODO: should probably happen elsewhere
-        self.texts_index.mmr_lambda = settings.texts_index_mmr_lambda
-
-        await self._build_texts_index(
+        updated = await self._build_texts_index(
             embedding_model,
             with_enrichment=settings.parsing.should_parse_and_enrich_media[1],
         )
+        updated.texts_index.mmr_lambda = settings.texts_index_mmr_lambda
         _k = k + len(self.deleted_dockeys)
         matches: list[Text] = cast(
             "list[Text]",
             (
-                await self.texts_index.max_marginal_relevance_search(
+                await updated.texts_index.max_marginal_relevance_search(
                     query,
                     k=_k,
                     fetch_k=2 * _k,
@@ -487,7 +558,7 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
             )[0],
         )
         matches = [m for m in matches if m.doc.dockey not in self.deleted_dockeys]
-        return matches[:k]
+        return updated, matches[:k]
 
     async def aget_evidence(
         self,
@@ -497,20 +568,17 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         embedding_model: EmbeddingModel | None = None,
         summary_llm_model: LLMModel | None = None,
         partitioning_fn: Callable[[Embeddable], int] | None = None,
-    ) -> PQASession:
+    ) -> tuple[Self, PQASession]:
 
         evidence_settings = get_settings(settings)
         answer_config = evidence_settings.answer
         prompt_config = evidence_settings.prompts
 
-        session = (
-            PQASession(question=query, config_md5=evidence_settings.md5)
-            if isinstance(query, str)
-            else query
-        )
+        session = _prepare_session(query, evidence_settings.md5)
+        updated = self
 
         if not self.docs and len(self.texts_index) == 0:
-            return session
+            return updated, session
 
         if embedding_model is None:
             embedding_model = evidence_settings.get_embedding_model()
@@ -519,7 +587,7 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
             summary_llm_model = evidence_settings.get_summary_llm()
 
         if answer_config.evidence_retrieval:
-            matches = await self.retrieve_texts(
+            updated, matches = await self.retrieve_texts(
                 session.question,
                 answer_config.evidence_k,
                 evidence_settings,
@@ -583,7 +651,7 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
                 if c is not None and c.score > 0 and c not in session.contexts
             }
         )
-        return session
+        return updated, session
 
     async def aquery(
         self,
@@ -594,7 +662,7 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         summary_llm_model: LLMModel | None = None,
         embedding_model: EmbeddingModel | None = None,
         partitioning_fn: Callable[[Embeddable], int] | None = None,
-    ) -> PQASession:
+    ) -> tuple[Self, PQASession]:
         query_settings = get_settings(settings)
         answer_config = query_settings.answer
         prompt_config = query_settings.prompts
@@ -606,14 +674,11 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         if embedding_model is None:
             embedding_model = query_settings.get_embedding_model()
 
-        session = (
-            PQASession(question=query, config_md5=query_settings.md5)
-            if isinstance(query, str)
-            else query
-        )
+        session = _prepare_session(query, query_settings.md5)
+        updated = self
         contexts = session.contexts
         if answer_config.get_evidence_if_no_contexts and not contexts:
-            session = await self.aget_evidence(
+            updated, session = await self.aget_evidence(
                 session,
                 callbacks=callbacks,
                 settings=settings,
@@ -718,4 +783,4 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
 
         session.populate_formatted_answers_and_bib_from_raw_answer()
 
-        return session
+        return updated, session

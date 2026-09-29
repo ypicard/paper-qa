@@ -519,7 +519,7 @@ async def process_file(
 
             tmp_docs = Docs()
             try:
-                await tmp_docs.aadd(
+                tmp_docs, _ = await tmp_docs.aadd(
                     path=abs_file_path,
                     fields=["title", "author", "journal", "year"],
                     settings=settings,

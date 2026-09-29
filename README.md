@@ -470,7 +470,7 @@ doc_paths = ("myfile.pdf", "myotherfile.pdf")
 # Prepare the Docs object by adding a bunch of documents
 docs = Docs()
 for doc_path in doc_paths:
-    await docs.aadd(doc_path)
+    docs, _ = await docs.aadd(doc_path)
 
 # Set up how we want to query the Docs object
 settings = Settings()
@@ -478,9 +478,22 @@ settings.llm = "claude-3-5-sonnet-20240620"
 settings.answer.answer_max_sources = 3
 
 # Query the Docs object to get an answer
-session = await docs.aquery("What is PaperQA2?", settings=settings)
+docs, session = await docs.aquery("What is PaperQA2?", settings=settings)
 print(session)
 ```
+
+Corpus operations leave their inputs unchanged. `aadd`, `aadd_file`, `aadd_url`,
+`aadd_texts`, `retrieve_texts`, `aget_evidence`, and `aquery` return
+`(updated_docs, result)`. Retain `updated_docs` to reuse embeddings and retrieval
+indexes. `clear_docs`, `delete`, and `merge` return the updated corpus directly.
+Treat corpora and their nested values as read-only: operations share unchanged
+payloads and copy the state they modify.
+
+Concurrent acquisitions return independent corpora. Combine them with
+`docs = docs.merge([first_docs, second_docs])`; merging keeps the first document
+for each key and defers missing embeddings until retrieval. Qdrant retrieval
+returns a local index snapshot without changing the remote collection. Custom
+vector stores must implement `fork()` to supply independent writable index state.
 
 ### Async
 
@@ -509,9 +522,9 @@ async def main() -> None:
     docs = Docs()
     # valid extensions include .pdf, .txt, .md, .html, .docx, .xlsx, .pptx, and code files (e.g., .py, .ts, .yaml)
     for doc in ("myfile.pdf", "myotherfile.pdf"):
-        await docs.aadd(doc)
+        docs, _ = await docs.aadd(doc)
 
-    session = await docs.aquery("What is PaperQA2?")
+    docs, session = await docs.aquery("What is PaperQA2?")
     print(session)
 
 
@@ -688,7 +701,7 @@ from paperqa import Docs, Settings
 
 docs = Docs()
 for doc in ("myfile.pdf", "myotherfile.pdf"):
-    await docs.aadd(doc, settings=Settings(embedding="text-embedding-large-3"))
+    docs, _ = await docs.aadd(doc, settings=Settings(embedding="text-embedding-large-3"))
 ```
 
 Note that PaperQA2 uses Numpy as a dense vector store.
@@ -714,7 +727,7 @@ model = HybridEmbeddingModel(
 )
 docs = Docs()
 for doc in ("myfile.pdf", "myotherfile.pdf"):
-    await docs.aadd(doc, embedding_model=model)
+    docs, _ = await docs.aadd(doc, embedding_model=model)
 ```
 
 The sparse embedding (keyword) models default to having 256 dimensions,
@@ -767,7 +780,7 @@ settings = Settings()
 settings.answer.answer_max_sources = 3
 settings.answer.evidence_k = 5
 
-await docs.aquery(
+docs, session = await docs.aquery(
     "What is PaperQA2?",
     settings=settings,
 )
@@ -791,10 +804,10 @@ source_files = glob.glob("**/*.js")
 docs = Docs()
 for f in source_files:
     # this assumes the file names are unique in code
-    await docs.aadd(
+    docs, _ = await docs.aadd(
         f, citation="File " + os.path.basename(f), docname=os.path.basename(f)
     )
-session = await docs.aquery("Where is the search bar in the header defined?")
+docs, session = await docs.aquery("Where is the search bar in the header defined?")
 print(session)
 ```
 
@@ -1085,7 +1098,7 @@ docs = Docs()
 
 # add some docs...
 
-await docs.aquery("What is PaperQA2?", callbacks=[typewriter])
+docs, session = await docs.aquery("What is PaperQA2?", callbacks=[typewriter])
 ```
 
 ### Caching Embeddings
@@ -1113,7 +1126,7 @@ my_qa_prompt = (
 docs = Docs()
 settings = Settings()
 settings.prompts.qa = my_qa_prompt
-await docs.aquery("What is PaperQA2?", settings=settings)
+docs, session = await docs.aquery("What is PaperQA2?", settings=settings)
 ```
 
 ### Pre and Post Prompts

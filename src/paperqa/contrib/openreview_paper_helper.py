@@ -158,7 +158,7 @@ class OpenReviewPaperHelper:
         ).rglob("*.pdf"):
             sub = subs.get(doc_path.stem) if subs is not None else None
             if sub:
-                await docs.aadd(
+                docs, _ = await docs.aadd(
                     doc_path,
                     settings=self.settings,
                     citation=sub.content["_bibtex"]["value"],
@@ -167,5 +167,5 @@ class OpenReviewPaperHelper:
                     authors=sub.content["authors"]["value"],
                 )
             else:
-                await docs.aadd(doc_path, settings=self.settings)
+                docs, _ = await docs.aadd(doc_path, settings=self.settings)
         return docs
