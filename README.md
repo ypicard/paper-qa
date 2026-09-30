@@ -492,8 +492,8 @@ payloads and copy the state they modify.
 Concurrent acquisitions return independent corpora. Combine them with
 `docs = merge_docs(docs, first_docs, second_docs)` (import `merge_docs` from
 `paperqa`); merging keeps the first document
-for each key and defers missing embeddings until retrieval. Qdrant retrieval
-returns a local index snapshot without changing the remote collection. Custom
+for each key and defers missing embeddings until retrieval. Qdrant does not
+support functional corpus retrieval; use `NumpyVectorStore`. Custom
 vector stores must implement `fork()` to supply independent writable index state.
 
 ### Async
@@ -711,8 +711,9 @@ Note that PaperQA2 uses Numpy as a dense vector store.
 Its design of using a keyword search initially reduces the number of chunks
 needed for each answer to a relatively small number < 1k.
 Therefore, `NumpyVectorStore` is a good place to start, it's a simple in-memory store, without an index.
-However, if a larger-than-memory vector store is needed,
-you can an external vector database like [Qdrant](https://qdrant.tech/) via the `QdrantVectorStore` class.
+`QdrantVectorStore` remains available for direct vector-store operations, but
+corpus retrieval raises `NotImplementedError` because Qdrant does not support
+independent writable index state.
 
 The hybrid embeddings can be customized:
 

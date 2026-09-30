@@ -154,7 +154,7 @@ async def test_mixed_embeddings_and_reinsert_after_deletion():
 
 
 @pytest.mark.asyncio
-async def test_qdrant_retrieval_preserves_remote_collection():
+async def test_qdrant_retrieval_rejects_unsupported_fork():
     from paperqa.llms import QdrantVectorStore
 
     doc = Doc(docname="paper", dockey="one", citation="Citation")
@@ -163,12 +163,9 @@ async def test_qdrant_retrieval_preserves_remote_collection():
     try:
         await store.add_texts_and_embeddings([text])
         corpus = Docs(texts_index=store)
-        ready, matches = await corpus.retrieve_texts(
-            "q", 1, embedding_model=LocalEmbedding()
-        )
-        assert matches[0].text == "evidence"
+        with pytest.raises(NotImplementedError, match="Use NumpyVectorStore"):
+            await corpus.retrieve_texts("q", 1, embedding_model=LocalEmbedding())
         assert corpus.texts_index is store
-        assert ready.texts_index is not store
         assert (await store.client.count(store.collection_name)).count == 1
         assert len(store) == 1
     finally:

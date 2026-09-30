@@ -297,39 +297,11 @@ class QdrantVectorStore(VectorStore):  # noqa: PLW1641  # TODO: add __hash__
     vector_name: str | None = Field(default=None)
     _point_ids: set[str] | None = None
 
-    async def fork(self) -> NumpyVectorStore:
-        """Materialize a local snapshot without writing to the backing collection."""
-        snapshot = NumpyVectorStore(mmr_lambda=self.mmr_lambda)
-        texts: list[Text] = []
-        async with asyncio.timeout(60):
-            if not await self._collection_exists():
-                return snapshot
-            offset = None
-            while True:
-                points, offset = await self.client.scroll(
-                    collection_name=self.collection_name,
-                    offset=offset,
-                    limit=100,
-                    with_payload=True,
-                    with_vectors=True,
-                )
-                texts.extend(
-                    [
-                        Text(
-                            **point.payload,
-                            embedding=(
-                                point.vector[self.vector_name]
-                                if self.vector_name
-                                else point.vector
-                            ),
-                        )
-                        for point in points
-                    ]
-                )
-                if offset is None:
-                    break
-        await snapshot.add_texts_and_embeddings(texts)
-        return snapshot
+    async def fork(self) -> "VectorStore":
+        raise NotImplementedError(
+            "QdrantVectorStore does not support functional corpus retrieval. "
+            "Use NumpyVectorStore."
+        )
 
     def __del__(self):
         """Cleanup async client connection."""
