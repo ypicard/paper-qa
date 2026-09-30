@@ -154,6 +154,25 @@ async def test_mixed_embeddings_and_reinsert_after_deletion():
 
 
 @pytest.mark.asyncio
+async def test_retrieval_reuses_embeddings_and_copies_only_missing_texts():
+    doc = Doc(docname="paper", dockey="one", citation="Citation")
+    cached = Text(name="paper 1", text="cached", doc=doc, embedding=[1.0, 2.0])
+    missing = Text(name="paper 2", text="missing", doc=doc)
+    corpus = Docs(docs={doc.dockey: doc}, texts=[cached, missing])
+    before = pickle.dumps(corpus)
+    model = LocalEmbedding()
+
+    updated, matches = await corpus.retrieve_texts("q", 2, embedding_model=model)
+
+    assert model.requests == [["missing"], ["q"]]
+    assert pickle.dumps(corpus) == before
+    assert updated.texts[0] is cached
+    assert updated.texts[1] is not missing
+    assert updated.texts[1].embedding == [1.0, 7.0]
+    assert any(text is updated.texts[1] for text in matches)
+
+
+@pytest.mark.asyncio
 async def test_qdrant_retrieval_rejects_unsupported_fork():
     from paperqa.llms import QdrantVectorStore
 

@@ -43,7 +43,7 @@ from paperqa.utils import (
 logger = logging.getLogger(__name__)
 
 
-def _prepare_session(query: PQASession | str, config_md5: str) -> PQASession:
+def _copy_or_create_session(query: PQASession | str, config_md5: str) -> PQASession:
     if isinstance(query, str):
         return PQASession(question=query, config_md5=config_md5)
     return query.model_copy(
@@ -393,21 +393,18 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         ]
         to_embed = [text for text in texts if text.embedding is None]
         if embedding_model and to_embed:
-            for t, t_embedding in zip(
-                to_embed,
-                await embedding_model.embed_documents(
-                    texts=await asyncio.gather(
-                        *(
-                            t.get_embeddable_text(
-                                all_settings.parsing.should_parse_and_enrich_media[1]
-                            )
-                            for t in to_embed
+            embeddings = await embedding_model.embed_documents(
+                texts=await asyncio.gather(
+                    *(
+                        text.get_embeddable_text(
+                            all_settings.parsing.should_parse_and_enrich_media[1]
                         )
+                        for text in to_embed
                     )
-                ),
-                strict=True,
-            ):
-                t.embedding = t_embedding
+                )
+            )
+            for text, embedding in zip(to_embed, embeddings, strict=True):
+                text.embedding = embedding
         return self._insert_texts(texts, doc)
 
     def _insert_texts(self, texts: list[Text], doc: Doc) -> tuple[Self, bool]:
@@ -486,30 +483,24 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
     async def _build_texts_index(
         self, embedding_model: EmbeddingModel, with_enrichment: bool = False
     ) -> Self:
-        texts = [t for t in self.texts if t not in self.texts_index]
-        to_embed = [t for t in texts if t.embedding is None]
-        replacements = {}
+        texts = [
+            t.model_copy() if t.embedding is None and t not in self.texts_index else t
+            for t in self.texts
+        ]
+        new_texts = [t for t in texts if t not in self.texts_index]
+        to_embed = [t for t in new_texts if t.embedding is None]
         if to_embed:
             embeddings = await embedding_model.embed_documents(
                 texts=await asyncio.gather(
                     *(t.get_embeddable_text(with_enrichment) for t in to_embed)
                 )
             )
-            replacements = {
-                id(text): text.model_copy(update={"embedding": embedding})
-                for text, embedding in zip(to_embed, embeddings, strict=True)
-            }
+            for text, embedding in zip(to_embed, embeddings, strict=True):
+                text.embedding = embedding
         index = await self.texts_index.fork()
-        if texts:
-            await index.add_texts_and_embeddings(
-                [replacements.get(id(text), text) for text in texts]
-            )
-        return self.model_copy(
-            update={
-                "texts": [replacements.get(id(text), text) for text in self.texts],
-                "texts_index": index,
-            }
-        )
+        if new_texts:
+            await index.add_texts_and_embeddings(new_texts)
+        return self.model_copy(update={"texts": texts, "texts_index": index})
 
     async def retrieve_texts(
         self,
@@ -559,7 +550,7 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         answer_config = evidence_settings.answer
         prompt_config = evidence_settings.prompts
 
-        session = _prepare_session(query, evidence_settings.md5)
+        session = _copy_or_create_session(query, evidence_settings.md5)
         updated = self
 
         if not self.docs and len(self.texts_index) == 0:
@@ -581,12 +572,6 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
             )
         else:
             matches = self.texts
-
-        matches = (
-            matches[: answer_config.evidence_k]
-            if answer_config.evidence_retrieval
-            else matches
-        )
 
         prompt_templates = None
         if not answer_config.evidence_skip_summary:
@@ -659,10 +644,9 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         if embedding_model is None:
             embedding_model = query_settings.get_embedding_model()
 
-        session = _prepare_session(query, query_settings.md5)
+        session = _copy_or_create_session(query, query_settings.md5)
         updated = self
-        contexts = session.contexts
-        if answer_config.get_evidence_if_no_contexts and not contexts:
+        if answer_config.get_evidence_if_no_contexts and not session.contexts:
             updated, session = await self.aget_evidence(
                 session,
                 callbacks=callbacks,
@@ -671,7 +655,6 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
                 summary_llm_model=summary_llm_model,
                 partitioning_fn=partitioning_fn,
             )
-            contexts = session.contexts
         pre_str = None
         if prompt_config.pre is not None:
             with set_llm_session_ids(session.id):
@@ -691,7 +674,7 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
             pre_str = pre.text
 
         context_str = await query_settings.context_serializer(
-            contexts=contexts,
+            contexts=session.contexts,
             question=session.question,
             pre_str=pre_str,
         )
@@ -763,7 +746,6 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         # now at end we modify, so we could have retried earlier
         session.raw_answer = answer_text
         session.answer_reasoning = answer_reasoning
-        session.contexts = contexts
         session.context = context_str
 
         session.populate_formatted_answers_and_bib_from_raw_answer()
