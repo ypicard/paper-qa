@@ -6,7 +6,7 @@ import pytest
 from lmi import EmbeddingModel
 from pydantic import Field, PrivateAttr
 
-from paperqa import Doc, Docs, Settings, Text
+from paperqa import Doc, Docs, Settings, Text, merge_docs
 from paperqa.types import PQASession
 
 
@@ -219,11 +219,22 @@ async def test_merge_preserves_independent_additions():
         )
         branches.append(branch)
     before = pickle.dumps((source, branches))
-    merged = source.merge(branches)
+    assert not merge_docs().docs
+    assert merge_docs(branches[0]) is branches[0]
+    merged = merge_docs(source, *branches)
     assert set(merged.docs) == {"one", "two"}
     assert merged.docnames == {"paper", "papera"}
     assert {text.doc.docname for text in merged.texts} == merged.docnames
     assert pickle.dumps((source, branches)) == before
+    ready, _ = await branches[0].retrieve_texts(
+        "q", 1, embedding_model=LocalEmbedding()
+    )
+    before_ready = pickle.dumps(ready)
+    combined = merge_docs(ready, *branches)
+    assert combined.texts_index is ready.texts_index
+    assert combined.docs["one"] is ready.docs["one"]
+    assert len(combined.texts) == 2
+    assert pickle.dumps(ready) == before_ready
 
 
 @pytest.mark.asyncio

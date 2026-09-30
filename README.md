@@ -490,7 +490,8 @@ Treat corpora and their nested values as read-only: operations share unchanged
 payloads and copy the state they modify.
 
 Concurrent acquisitions return independent corpora. Combine them with
-`docs = docs.merge([first_docs, second_docs])`; merging keeps the first document
+`docs = merge_docs(docs, first_docs, second_docs)` (import `merge_docs` from
+`paperqa`); merging keeps the first document
 for each key and defers missing embeddings until retrieval. Qdrant retrieval
 returns a local index snapshot without changing the remote collection. Custom
 vector stores must implement `fork()` to supply independent writable index state.

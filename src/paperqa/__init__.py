@@ -12,7 +12,7 @@ from lmi import (
 
 from paperqa.agents import ask
 from paperqa.agents.main import agent_query
-from paperqa.docs import Docs, PQASession
+from paperqa.docs import Docs, PQASession, merge_docs
 from paperqa.llms import (
     NumpyVectorStore,
     QdrantVectorStore,
@@ -46,4 +46,5 @@ __all__ = [
     "ask",
     "embedding_model_factory",
     "get_settings",
+    "merge_docs",
 ]

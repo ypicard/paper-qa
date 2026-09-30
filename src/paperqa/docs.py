@@ -784,3 +784,16 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
         session.populate_formatted_answers_and_bib_from_raw_answer()
 
         return updated, session
+
+
+def merge_docs(*corpora: Docs) -> Docs:
+    """Combine corpora without changing the inputs.
+
+    The first document for each dockey wins. Later documents with colliding
+    names receive unique names; look them up by dockey in the returned corpus.
+    Pass the existing corpus first to retain its embeddings and retrieval index.
+    No arguments returns an empty corpus. Unchanged values may be shared.
+    """
+    if not corpora:
+        return Docs()
+    return corpora[0].merge(corpora[1:])
