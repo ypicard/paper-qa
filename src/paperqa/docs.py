@@ -445,21 +445,6 @@ class Docs(BaseModel):  # noqa: PLW1641  # TODO: add __hash__
             True,
         )
 
-    def merge(self, sources: Sequence[Docs]) -> Self:
-        """Return the union of already acquired corpora without embedding or filtering.
-
-        Keep the first document for each key. Retrieval embeds any missing vectors.
-        """
-        updated = self
-        for source in sources:
-            texts_by_key: dict[DocKey, list[Text]] = defaultdict(list)
-            for text in source.texts:
-                texts_by_key[text.doc.dockey].append(text)
-            for doc in source.docs.values():
-                if texts := texts_by_key.get(doc.dockey):
-                    updated, _ = updated._insert_texts(texts, doc)
-        return updated
-
     def delete(
         self,
         name: str | None = None,
@@ -796,4 +781,12 @@ def merge_docs(*corpora: Docs) -> Docs:
     """
     if not corpora:
         return Docs()
-    return corpora[0].merge(corpora[1:])
+    updated = corpora[0]
+    for source in corpora[1:]:
+        texts_by_key: dict[DocKey, list[Text]] = defaultdict(list)
+        for text in source.texts:
+            texts_by_key[text.doc.dockey].append(text)
+        for doc in source.docs.values():
+            if texts := texts_by_key.get(doc.dockey):
+                updated, _ = updated._insert_texts(texts, doc)
+    return updated

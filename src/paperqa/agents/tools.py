@@ -14,7 +14,7 @@ from aviary.core import Message, ToolRequestMessage
 from lmi import Embeddable, EmbeddingModel, LiteLLMModel
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from paperqa.docs import Docs
+from paperqa.docs import Docs, merge_docs
 from paperqa.settings import Settings
 from paperqa.sources.clinical_trials import add_clinical_trials_to_docs
 from paperqa.types import Context, DocDetails, PQASession
@@ -196,7 +196,7 @@ class PaperSearch(NamedTool):
                 settings=self.settings,
                 embedding_model=self.embedding_model,
             )
-            state.docs = state.docs.merge([updated_docs])
+            state.docs = merge_docs(state.docs, updated_docs)
 
         status = state.status
         logger.info(status)
@@ -677,7 +677,7 @@ class ClinicalTrialsSearch(NamedTool):
                 offset=offset,
             )
         )
-        state.docs = state.docs.merge([updated_docs])
+        state.docs = merge_docs(state.docs, updated_docs)
         # mark how far we've searched so that continuation will start at the right place
         self.previous_searches[query] += self.search_count
         if error_message is None:

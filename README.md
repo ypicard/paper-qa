@@ -485,7 +485,7 @@ print(session)
 Corpus operations leave their inputs unchanged. `aadd`, `aadd_file`, `aadd_url`,
 `aadd_texts`, `retrieve_texts`, `aget_evidence`, and `aquery` return
 `(updated_docs, result)`. Retain `updated_docs` to reuse embeddings and retrieval
-indexes. `clear_docs`, `delete`, and `merge` return the updated corpus directly.
+indexes. `clear_docs`, `delete`, and `merge_docs` return the updated corpus directly.
 Treat corpora and their nested values as read-only: operations share unchanged
 payloads and copy the state they modify.
 
